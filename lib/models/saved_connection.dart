@@ -13,6 +13,7 @@ class SavedConnection {
     this.lastConnectionSessionId,
     this.lastWebviewUrl,
     this.lastToken,
+    this.hubClientToken,
   });
 
   /// UUID，唯一标识
@@ -51,6 +52,9 @@ class SavedConnection {
   /// 上次的 Token（用于鉴权）
   String? lastToken;
 
+  /// HUB 模式客户端 Token（用于 hub 鉴权）
+  String? hubClientToken;
+
   /// 是否为 HUB 模式
   bool get isHubMode => mode == "hub";
 
@@ -72,6 +76,7 @@ class SavedConnection {
       lastConnectionSessionId: json["lastConnectionSessionId"]?.toString(),
       lastWebviewUrl: json["lastWebviewUrl"]?.toString(),
       lastToken: json["lastToken"]?.toString(),
+      hubClientToken: json["hubClientToken"]?.toString(),
     );
   }
 
@@ -90,6 +95,7 @@ class SavedConnection {
       "lastConnectionSessionId": lastConnectionSessionId,
       "lastWebviewUrl": lastWebviewUrl,
       "lastToken": lastToken,
+      "hubClientToken": hubClientToken,
     };
   }
 
@@ -112,6 +118,8 @@ class SavedConnection {
     bool clearLastWebviewUrl = false,
     String? lastToken,
     bool clearLastToken = false,
+    String? hubClientToken,
+    bool clearHubClientToken = false,
   }) {
     return SavedConnection(
       id: id ?? this.id,
@@ -128,6 +136,7 @@ class SavedConnection {
           : (lastConnectionSessionId ?? this.lastConnectionSessionId),
       lastWebviewUrl: clearLastWebviewUrl ? null : (lastWebviewUrl ?? this.lastWebviewUrl),
       lastToken: clearLastToken ? null : (lastToken ?? this.lastToken),
+      hubClientToken: clearHubClientToken ? null : (hubClientToken ?? this.hubClientToken),
     );
   }
 

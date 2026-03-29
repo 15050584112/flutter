@@ -148,6 +148,12 @@ class _TaskEditorPageState extends State<TaskEditorPage> {
     return "Session ${session.shortId}";
   }
 
+  String _sessionSubLabel(TerminalSessionInfo session) {
+    final id = session.sessionId.trim();
+    if (id.isEmpty) return "";
+    return "ID: $id";
+  }
+
   String _taskScheduleLabel() {
     if (_scheduleKind == TaskScheduleKind.once) {
       if (_scheduledTime == null) return "固定时间";
@@ -242,6 +248,7 @@ class _TaskEditorPageState extends State<TaskEditorPage> {
 
   @override
   Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
     final sessionError = _selectedConnection == null ? null : _sessionErrors[_selectedConnection!.id];
     final isSessionLoading = _selectedConnection == null ? false : (_sessionLoading[_selectedConnection!.id] ?? false);
     final connectionSessions = _selectedConnection == null
@@ -424,7 +431,20 @@ class _TaskEditorPageState extends State<TaskEditorPage> {
                                         .map(
                                           (s) => DropdownMenuItem(
                                             value: s,
-                                            child: Text(_sessionLabel(s)),
+                                            child: Column(
+                                              crossAxisAlignment: CrossAxisAlignment.start,
+                                              mainAxisSize: MainAxisSize.min,
+                                              children: [
+                                                Text(_sessionLabel(s)),
+                                                const SizedBox(height: 2),
+                                                Text(
+                                                  _sessionSubLabel(s),
+                                                  style: AppTextStyles.caption.copyWith(
+                                                    color: scheme.onSurfaceVariant,
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
                                           ),
                                         )
                                         .toList(),

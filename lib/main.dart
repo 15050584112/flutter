@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -24,6 +25,14 @@ class ChatRouteArgs {
     required this.webviewUrl,
     this.projectName,
     this.connectionId,
+  });
+}
+
+class HubRouteArgs {
+  final String connectionId;
+
+  const HubRouteArgs({
+    required this.connectionId,
   });
 }
 
@@ -129,6 +138,33 @@ class _CcViewerMobileAppState extends State<CcViewerMobileApp> {
           case '/schedule':
             return MaterialPageRoute(
               builder: (_) => const SchedulePage(),
+            );
+          case '/hub':
+            final args = settings.arguments as HubRouteArgs?;
+            if (args == null) {
+              return MaterialPageRoute(
+                builder: (_) => ConnectionListPage(manager: _manager),
+              );
+            }
+            // Hub 模式也走 WebView，加载 Hub 服务器的前端界面
+            // 与 LAN mobile page 保持一致的体验
+            final connection = _manager.getConnectionById(args.connectionId);
+            final hubWebviewUrl = (connection?.lastWebviewUrl ?? "").trim();
+            if (connection != null && hubWebviewUrl.isNotEmpty) {
+              return MaterialPageRoute(
+                builder: (_) => ChatPage(
+                  webviewUrl: hubWebviewUrl,
+                  projectName: connection.projectName,
+                  connectionId: connection.id,
+                  manager: _manager,
+                ),
+              );
+            }
+            return MaterialPageRoute(
+              builder: (_) => Scaffold(
+                appBar: AppBar(title: const Text('Hub')),
+                body: const Center(child: Text('WebView URL 未就绪，请重新扫码')),
+              ),
             );
           case '/profile':
             return MaterialPageRoute(

@@ -150,17 +150,51 @@ class ConnectPayload {
 
   /// 从 hubDomain 推导 hubHostWsUrl
   static String deriveHubHostWsUrl(String hubDomain) {
-    final domain = hubDomain.replaceFirst(RegExp(r'^https?://'), '');
-    final isLocal = domain.contains('localhost') || domain.contains('127.0.0.1');
+    final trimmed = hubDomain.trim();
+    if (trimmed.isEmpty) return '';
+    final uri = Uri.tryParse(trimmed);
+    if (uri != null && uri.host.isNotEmpty) {
+      final scheme = uri.scheme.toLowerCase();
+      if (scheme == 'http') return 'ws://${uri.host}${uri.hasPort ? ':${uri.port}' : ''}/ws/mobile/client';
+      if (scheme == 'https') return 'wss://${uri.host}${uri.hasPort ? ':${uri.port}' : ''}/ws/mobile/client';
+    }
+    final domain = trimmed.replaceFirst(RegExp(r'^https?://'), '');
+    final isLocal = _isLocalLikeHost(domain);
     final scheme = isLocal ? 'ws' : 'wss';
     return '$scheme://$domain/ws/mobile/client';
   }
 
   /// 从 hubDomain 推导 pairingApiUrl
   static String derivePairingApiUrl(String hubDomain) {
-    final domain = hubDomain.replaceFirst(RegExp(r'^https?://'), '');
-    final isLocal = domain.contains('localhost') || domain.contains('127.0.0.1');
+    final trimmed = hubDomain.trim();
+    if (trimmed.isEmpty) return '';
+    final uri = Uri.tryParse(trimmed);
+    if (uri != null && uri.host.isNotEmpty) {
+      final scheme = uri.scheme.toLowerCase();
+      if (scheme == 'http' || scheme == 'https') {
+        return '${scheme}://${uri.host}${uri.hasPort ? ':${uri.port}' : ''}/api/mobile/pairings/consume';
+      }
+    }
+    final domain = trimmed.replaceFirst(RegExp(r'^https?://'), '');
+    final isLocal = _isLocalLikeHost(domain);
     final scheme = isLocal ? 'http' : 'https';
     return '$scheme://$domain/api/mobile/pairings/consume';
+  }
+
+  static bool _isLocalLikeHost(String host) {
+    final lower = host.toLowerCase();
+    if (lower.contains('localhost') || lower.contains('127.0.0.1')) return true;
+    if (lower.endsWith('.local')) return true;
+    final cleanHost = lower.split('/').first.split(':').first;
+    final parts = cleanHost.split('.');
+    if (parts.length != 4) return false;
+    final nums = parts.map((p) => int.tryParse(p)).toList();
+    if (nums.any((n) => n == null || n < 0 || n > 255)) return false;
+    final a = nums[0]!;
+    final b = nums[1]!;
+    if (a == 10) return true;
+    if (a == 192 && b == 168) return true;
+    if (a == 172 && b >= 16 && b <= 31) return true;
+    return false;
   }
 }

@@ -1,6 +1,11 @@
+import "dart:async";
+import "dart:convert";
+import "dart:io";
+
 import "package:flutter/foundation.dart";
 
 import "package:ccviewer_mobile_hub/models/connect_payload.dart";
+import "package:ccviewer_mobile_hub/models/hub_pairing_result.dart";
 import "package:ccviewer_mobile_hub/models/saved_connection.dart";
 import "package:ccviewer_mobile_hub/services/storage_service.dart";
 
@@ -52,28 +57,37 @@ class ConnectionManager extends ChangeNotifier {
     // 先断开当前连接（清理旧状态）
     await disconnect();
 
+    HubPairingResult? hubResult;
+    if (payload.isHubMode) {
+      hubResult = await _consumeHubPairing(payload);
+    }
+
+    final resolvedViewerUrl = _resolveViewerUrl(payload, hubResult);
+    final resolvedWorkspacePath = _resolveWorkspacePath(payload, hubResult);
+    final resolvedProjectName = _resolveProjectName(payload, hubResult);
+    final resolvedWebviewUrl = _resolveWebviewUrl(payload, hubResult);
+    final resolvedToken = _resolveToken(payload, hubResult);
+    final resolvedConnectionSessionId =
+        _resolveConnectionSessionId(payload, hubResult);
+
     // 查找是否已存在相同连接（优先用 viewerUrl，其次用 workspacePath）
     // viewerUrl 是最稳定的标识，同一台电脑的 cc-viewer 地址不变
     SavedConnection? existing;
-    final payloadViewerUrl = payload.viewerUrl;
-    final payloadWorkspacePath = (payload.workspacePath ?? "").trim();
-    final payloadProjectName = _normalizeProjectName(payload.projectName);
-    
     for (final c in _connections) {
       final connViewerUrl = _deriveViewerUrlFromConnection(c);
       
       // 优先匹配 viewerUrl（最稳定）
-      if (payloadViewerUrl.isNotEmpty && 
+      if (resolvedViewerUrl.isNotEmpty && 
           connViewerUrl.isNotEmpty && 
-          payloadViewerUrl == connViewerUrl) {
+          resolvedViewerUrl == connViewerUrl) {
         existing = c;
         break;
       }
       
       // 其次匹配 workspacePath（需要两边都非空）
-      if (payloadWorkspacePath.isNotEmpty && 
+      if (resolvedWorkspacePath.isNotEmpty && 
           c.workspacePath.isNotEmpty && 
-          payloadWorkspacePath == c.workspacePath) {
+          resolvedWorkspacePath == c.workspacePath) {
         existing = c;
         break;
       }
@@ -82,16 +96,18 @@ class ConnectionManager extends ChangeNotifier {
     // 创建或更新 SavedConnection
     // 新版方案：直接保存为 connected 状态，不需要等待 WebSocket 连接
     final nextProjectName =
-        payloadProjectName.isNotEmpty ? payloadProjectName : (existing?.projectName ?? "");
-    final nextWorkspacePath = payloadWorkspacePath.isNotEmpty
-        ? payloadWorkspacePath
+        resolvedProjectName.isNotEmpty ? resolvedProjectName : (existing?.projectName ?? "");
+    final nextWorkspacePath = resolvedWorkspacePath.isNotEmpty
+        ? resolvedWorkspacePath
         : (existing?.workspacePath ?? "");
     final nextAlias = _resolveAlias(
       currentAlias: existing?.alias,
       currentProjectName: existing?.projectName,
       nextProjectName: nextProjectName,
-      viewerUrl: payloadViewerUrl,
+      viewerUrl: resolvedViewerUrl,
     );
+
+    final shouldClearWebviewUrl = resolvedWebviewUrl.isEmpty;
 
     final connection = existing?.copyWith(
           alias: nextAlias,
@@ -100,10 +116,14 @@ class ConnectionManager extends ChangeNotifier {
           lastConnectedAt: DateTime.now(),
           lastStatus: "connected",
           lastWsUrl: null,
-          lastConnectionSessionId: payload.connectionSessionId,
+          lastConnectionSessionId: resolvedConnectionSessionId,
           hubDomain: payload.hubDomain,
-          lastWebviewUrl: payload.fullWebviewUrl,
-          lastToken: payload.token,
+          lastWebviewUrl: resolvedWebviewUrl.isEmpty ? null : resolvedWebviewUrl,
+          clearLastWebviewUrl: shouldClearWebviewUrl,
+          lastToken: resolvedToken,
+          hubClientToken: payload.isHubMode ? resolvedToken : null,
+          clearHubClientToken: !payload.isHubMode,
+          clearHubDomain: !payload.isHubMode,
         ) ??
         SavedConnection(
           id: SavedConnection.generateId(),
@@ -115,9 +135,10 @@ class ConnectionManager extends ChangeNotifier {
           lastConnectedAt: DateTime.now(),
           lastStatus: "connected",
           lastWsUrl: null,
-          lastConnectionSessionId: payload.connectionSessionId,
-          lastWebviewUrl: payload.fullWebviewUrl,
-          lastToken: payload.token,
+          lastConnectionSessionId: resolvedConnectionSessionId,
+          lastWebviewUrl: resolvedWebviewUrl.isEmpty ? null : resolvedWebviewUrl,
+          lastToken: resolvedToken,
+          hubClientToken: payload.isHubMode ? resolvedToken : null,
         );
 
     // 设置当前活跃连接
@@ -130,6 +151,107 @@ class ConnectionManager extends ChangeNotifier {
     await _deduplicateConnections();
     notifyListeners();
   }
+
+  Future<HubPairingResult> _consumeHubPairing(ConnectPayload payload) async {
+    final apiUrl = payload.pairingApiUrl;
+    if (apiUrl == null || apiUrl.trim().isEmpty) {
+      throw StateError("Hub 配对地址缺失，请重新扫码");
+    }
+    final pairingCode = (payload.pairingCode ?? "").trim();
+    if (pairingCode.isEmpty) {
+      throw StateError("Hub 配对码缺失，请重新扫码");
+    }
+
+    final uri = Uri.tryParse(apiUrl);
+    if (uri == null) {
+      throw StateError("Hub 配对地址无效: $apiUrl");
+    }
+
+    final client = HttpClient()..connectionTimeout = const Duration(seconds: 8);
+    try {
+      final req = await client.postUrl(uri).timeout(const Duration(seconds: 8));
+      req.headers.contentType = ContentType.json;
+      req.write(
+        jsonEncode(
+          <String, dynamic>{
+            "connectionSessionId": payload.connectionSessionId,
+            "pairingCode": pairingCode,
+          },
+        ),
+      );
+      final res = await req.close().timeout(const Duration(seconds: 12));
+      final body = await utf8.decodeStream(res);
+
+      if (res.statusCode >= 400) {
+        throw StateError("Hub 配对失败: HTTP ${res.statusCode}");
+      }
+
+      final decoded = jsonDecode(body);
+      if (decoded is! Map) {
+        throw StateError("Hub 配对返回格式不正确");
+      }
+
+      final result = HubPairingResult.fromJson(decoded.cast<String, dynamic>());
+      if (result.clientToken.trim().isEmpty) {
+        throw StateError("Hub 配对返回缺少 clientToken");
+      }
+
+      return result;
+    } on TimeoutException {
+      throw StateError("Hub 配对超时，请稍后再试");
+    } catch (error) {
+      throw StateError("Hub 配对失败: $error");
+    } finally {
+      client.close(force: true);
+    }
+  }
+
+  static String _resolveViewerUrl(ConnectPayload payload, HubPairingResult? hubResult) {
+    if (payload.isHubMode) {
+      final candidate = (hubResult?.viewerUrl ?? "").trim();
+      if (candidate.isNotEmpty) return candidate;
+    }
+    return payload.viewerUrl;
+  }
+
+  static String _resolveWebviewUrl(ConnectPayload payload, HubPairingResult? hubResult) {
+    if (payload.isHubMode) {
+      // Hub模式：使用Hub服务器返回的viewerUrl（Hub前端界面地址）
+      final candidate = (hubResult?.viewerUrl ?? "").trim();
+      if (candidate.isNotEmpty) return candidate;
+      return "";
+    }
+    return payload.fullWebviewUrl;
+  }
+
+  static String _resolveToken(ConnectPayload payload, HubPairingResult? hubResult) {
+    if (payload.isHubMode) {
+      final candidate = (hubResult?.clientToken ?? "").trim();
+      if (candidate.isNotEmpty) return candidate;
+    }
+    return payload.token ?? "";
+  }
+
+  static String _resolveConnectionSessionId(ConnectPayload payload, HubPairingResult? hubResult) {
+    if (payload.isHubMode) {
+      final candidate = (hubResult?.connectionSessionId ?? "").trim();
+      if (candidate.isNotEmpty) return candidate;
+    }
+    return payload.connectionSessionId;
+  }
+
+  static String _resolveWorkspacePath(ConnectPayload payload, HubPairingResult? hubResult) {
+    final hubPath = (hubResult?.workspacePath ?? "").trim();
+    if (hubPath.isNotEmpty) return hubPath;
+    return (payload.workspacePath ?? "").trim();
+  }
+
+  static String _resolveProjectName(ConnectPayload payload, HubPairingResult? hubResult) {
+    final hubName = (hubResult?.projectName ?? "").trim();
+    if (hubName.isNotEmpty) return hubName;
+    return _normalizeProjectName(payload.projectName);
+  }
+
 
   /// 重连已保存的连接
   /// 
@@ -365,6 +487,9 @@ class ConnectionManager extends ChangeNotifier {
             lastToken: (conn.lastToken?.isNotEmpty ?? false)
                 ? conn.lastToken
                 : existingConn.lastToken,
+            hubClientToken: (conn.hubClientToken?.isNotEmpty ?? false)
+                ? conn.hubClientToken
+                : existingConn.hubClientToken,
           );
           toRemove.add(existingIdx);
           seen[key] = i;
@@ -390,6 +515,9 @@ class ConnectionManager extends ChangeNotifier {
             lastToken: (existingConn.lastToken?.isNotEmpty ?? false)
                 ? existingConn.lastToken
                 : conn.lastToken,
+            hubClientToken: (existingConn.hubClientToken?.isNotEmpty ?? false)
+                ? existingConn.hubClientToken
+                : conn.hubClientToken,
           );
           toRemove.add(i);
         }

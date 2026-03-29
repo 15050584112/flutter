@@ -178,6 +178,19 @@ class ScheduleService extends ChangeNotifier {
     }
   }
 
+  Future<bool> sendCommandNow({
+    required SavedConnection connection,
+    required String sessionId,
+    required String command,
+  }) async {
+    if (command.trim().isEmpty) return false;
+    return _sendCommand(
+      connection: connection,
+      sessionId: sessionId,
+      command: command,
+    );
+  }
+
   ScheduledTask _withNextRun(ScheduledTask task, {DateTime? now}) {
     final current = now ?? DateTime.now();
     if (!task.enabled) {
@@ -339,6 +352,18 @@ class ScheduleService extends ChangeNotifier {
 
     final rawWsUri = parseWebviewUri(connection.lastWsUrl);
     final wsUri = parseWsUri(connection.lastWsUrl);
+    if (connection.isHubMode) {
+      final hubDomain = connection.hubDomain?.trim() ?? "";
+      final hubToken = connection.hubClientToken?.trim();
+      if (hubDomain.isNotEmpty && hubToken != null && hubToken.isNotEmpty) {
+        final hubUri = Uri.tryParse(hubDomain);
+        addCandidate(
+          baseUri: hubUri,
+          token: hubToken,
+        );
+      }
+    }
+
     addCandidate(
       baseUri: wsUri,
       token: resolveToken(webviewUri) ?? resolveToken(rawWsUri),
@@ -348,6 +373,16 @@ class ScheduleService extends ChangeNotifier {
   }
 
   Uri? _resolveViewerUri(SavedConnection connection) {
+    if (connection.isHubMode) {
+      final hubDomain = connection.hubDomain?.trim() ?? "";
+      if (hubDomain.isNotEmpty) {
+        final hubUri = Uri.tryParse(hubDomain);
+        if (hubUri != null && hubUri.host.isNotEmpty) {
+          return hubUri;
+        }
+      }
+    }
+
     final webviewUri = Uri.tryParse((connection.lastWebviewUrl ?? "").trim());
     if (webviewUri != null && webviewUri.host.isNotEmpty) {
       return webviewUri;
@@ -366,6 +401,11 @@ class ScheduleService extends ChangeNotifier {
   }
 
   String? _resolveTerminalToken(SavedConnection connection) {
+    if (connection.isHubMode) {
+      final hubToken = connection.hubClientToken?.trim();
+      if (hubToken != null && hubToken.isNotEmpty) return hubToken;
+    }
+
     final webviewUri = Uri.tryParse((connection.lastWebviewUrl ?? "").trim());
     final webviewToken = webviewUri?.queryParameters["token"]?.trim();
     if (webviewToken != null && webviewToken.isNotEmpty) {
@@ -457,6 +497,110 @@ class ScheduleService extends ChangeNotifier {
     required String sessionId,
     required String command,
   }) async {
+    if (connection.isHubMode) {
+      return _sendHubCommand(
+        connection: connection,
+        sessionId: sessionId,
+        command: command,
+      );
+    }
+
+    return _sendLanCommand(
+      connection: connection,
+      sessionId: sessionId,
+      command: command,
+    );
+  }
+
+  Future<bool> _sendHubCommand({
+    required SavedConnection connection,
+    required String sessionId,
+    required String command,
+  }) async {
+    final hubUri = _resolveHubRelayUri(connection);
+    final hubToken = connection.hubClientToken?.trim();
+    if (hubUri == null || hubToken == null || hubToken.isEmpty) {
+      return false;
+    }
+
+    final wsUri = Uri(
+      scheme: hubUri.scheme == "https" ? "wss" : "ws",
+      host: hubUri.host,
+      port: hubUri.hasPort ? hubUri.port : null,
+      path: "/ws/mobile/client",
+      queryParameters: <String, String>{"token": hubToken},
+    );
+
+    final requestId = DateTime.now().microsecondsSinceEpoch.toString();
+    final completer = Completer<bool>();
+    WebSocket? socket;
+    StreamSubscription<dynamic>? subscription;
+
+    try {
+      socket = await WebSocket.connect(wsUri.toString()).timeout(const Duration(seconds: 6));
+      subscription = socket.listen(
+        (data) {
+          if (completer.isCompleted) return;
+          try {
+            final decoded = jsonDecode(data.toString());
+            if (decoded is! Map) return;
+            final message = decoded.cast<String, dynamic>();
+            final type = message["type"]?.toString();
+            final responseRequestId = message["requestId"]?.toString();
+            if (responseRequestId != requestId) return;
+            if (type == "send_message_result") {
+              completer.complete(message["ok"] == true);
+              return;
+            }
+            if (type == "error") {
+              completer.complete(false);
+            }
+          } catch (_) {
+            // Ignore non-JSON bootstrap messages from the Hub socket.
+          }
+        },
+        onError: (_) {
+          if (!completer.isCompleted) {
+            completer.complete(false);
+          }
+        },
+        onDone: () {
+          if (!completer.isCompleted) {
+            completer.complete(false);
+          }
+        },
+      );
+
+      socket.add(
+        jsonEncode(
+          <String, dynamic>{
+            "type": "send_message",
+            "sessionId": sessionId,
+            "text": command.replaceAll(RegExp(r"[\r\n]+$"), ""),
+            "requestId": requestId,
+          },
+        ),
+      );
+
+      return await completer.future.timeout(
+        const Duration(seconds: 8),
+        onTimeout: () => false,
+      );
+    } catch (_) {
+      return false;
+    } finally {
+      await subscription?.cancel();
+      try {
+        await socket?.close();
+      } catch (_) {}
+    }
+  }
+
+  Future<bool> _sendLanCommand({
+    required SavedConnection connection,
+    required String sessionId,
+    required String command,
+  }) async {
     final viewerUri = _resolveViewerUri(connection);
     if (viewerUri == null) return false;
 
@@ -485,5 +629,17 @@ class ScheduleService extends ChangeNotifier {
     } catch (_) {
       return false;
     }
+  }
+
+  Uri? _resolveHubRelayUri(SavedConnection connection) {
+    final hubDomain = connection.hubDomain?.trim() ?? "";
+    if (hubDomain.isEmpty) {
+      return null;
+    }
+    final uri = Uri.tryParse(hubDomain);
+    if (uri == null || uri.host.isEmpty) {
+      return null;
+    }
+    return uri;
   }
 }

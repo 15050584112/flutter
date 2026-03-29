@@ -315,28 +315,10 @@ class _ConnectionListPageState extends State<ConnectionListPage> {
 
       if (!mounted) return;
 
-      // 导航到聊天页 - 使用新的 ChatRouteArgs
+      // 导航
       final connection = widget.manager.activeConnection;
       if (connection != null) {
-        final webviewUrl = connection.lastWebviewUrl ?? payload.fullWebviewUrl;
-        if (webviewUrl.isNotEmpty) {
-          Navigator.pushNamed(
-            context,
-            "/chat",
-            arguments: ChatRouteArgs(
-              webviewUrl: webviewUrl,
-              projectName: connection.projectName,
-              connectionId: connection.id,
-            ),
-          );
-        } else {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text("无法获取 WebView URL"),
-              backgroundColor: AppColors.error,
-            ),
-          );
-        }
+        _openConnection(connection, fallbackWebviewUrl: payload.fullWebviewUrl);
       }
     } catch (e) {
       if (!mounted) return;
@@ -351,26 +333,26 @@ class _ConnectionListPageState extends State<ConnectionListPage> {
 
   /// 点击连接项
   void _onConnectionTap(SavedConnection connection) {
-    // 检查是否有 webviewUrl
-    final webviewUrl = connection.lastWebviewUrl;
-    if (webviewUrl != null && webviewUrl.isNotEmpty) {
-      Navigator.pushNamed(
-        context,
-        "/chat",
-        arguments: ChatRouteArgs(
-          webviewUrl: webviewUrl,
-          projectName: connection.projectName,
-          connectionId: connection.id,
-        ),
-      );
-    } else {
-      // 没有 webviewUrl，尝试重新连接
-      _reconnectAndNavigate(connection);
-    }
+    _openConnection(connection);
   }
 
   /// 重新连接并导航
   Future<void> _reconnectAndNavigate(SavedConnection connection) async {
+    if (connection.isHubMode) {
+      if ((connection.hubClientToken ?? "").isEmpty) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text("Hub 连接已过期，请重新扫码"),
+            backgroundColor: AppColors.warning,
+          ),
+        );
+        return;
+      }
+      _openConnection(connection);
+      return;
+    }
+
     try {
       await widget.manager.reconnect(connection);
       if (!mounted) return;
@@ -403,6 +385,50 @@ class _ConnectionListPageState extends State<ConnectionListPage> {
         ),
       );
     }
+  }
+
+  void _openConnection(SavedConnection connection, {String? fallbackWebviewUrl}) {
+    if (connection.isHubMode) {
+      final token = (connection.hubClientToken ?? "").trim();
+      if (token.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text("Hub 连接已过期，请重新扫码"),
+            backgroundColor: AppColors.warning,
+          ),
+        );
+        return;
+      }
+      Navigator.pushNamed(
+        context,
+        "/hub",
+        arguments: HubRouteArgs(connectionId: connection.id),
+      );
+      return;
+    }
+
+    final webviewUrl = (connection.lastWebviewUrl ?? "").trim().isNotEmpty
+        ? connection.lastWebviewUrl!
+        : (fallbackWebviewUrl ?? "");
+    if (webviewUrl.isNotEmpty) {
+      Navigator.pushNamed(
+        context,
+        "/chat",
+        arguments: ChatRouteArgs(
+          webviewUrl: webviewUrl,
+          projectName: connection.projectName,
+          connectionId: connection.id,
+        ),
+      );
+      return;
+    }
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text("无法获取 WebView URL，请重新扫码连接"),
+        backgroundColor: AppColors.warning,
+      ),
+    );
   }
 
   /// 删除连接

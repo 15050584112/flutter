@@ -69,6 +69,11 @@ class _ChatPageState extends State<ChatPage> {
       return;
     }
 
+    if (!_requiresLocalNetworkPermission(widget.webviewUrl)) {
+      await _runWebViewPreflight();
+      return;
+    }
+
     final access = await LocalNetworkAccess.request();
     if (!mounted) return;
 
@@ -86,6 +91,44 @@ class _ChatPageState extends State<ChatPage> {
           '请到 iPhone 设置 > CCTV > 本地网络 开启后重试。\n'
           '${access.message ?? ''}'.trim();
     });
+  }
+
+  bool _requiresLocalNetworkPermission(String url) {
+    final uri = Uri.tryParse(url);
+    if (uri == null) return true;
+    final host = uri.host.trim().toLowerCase();
+    if (host.isEmpty) return true;
+    if (host == "localhost" || host == "127.0.0.1") return true;
+    if (host.endsWith(".local")) return true;
+    final ipv4 = Uri.tryParse("http://$host");
+    if (ipv4 == null) return false;
+    final parts = host.split(".");
+    if (parts.length != 4) return false;
+    final nums = parts.map((p) => int.tryParse(p)).toList();
+    if (nums.any((n) => n == null || n < 0 || n > 255)) return false;
+    final a = nums[0]!;
+    final b = nums[1]!;
+    if (a == 10) return true;
+    if (a == 192 && b == 168) return true;
+    if (a == 172 && b >= 16 && b <= 31) return true;
+    return false;
+  }
+
+  bool _shouldBypassPreflightFailure(Uri uri) {
+    final host = uri.host.trim().toLowerCase();
+    if (host.isEmpty) return false;
+    if (host == "localhost" || host == "127.0.0.1") return false;
+    if (host.endsWith(".local")) return true;
+    final parts = host.split(".");
+    if (parts.length != 4) return false;
+    final nums = parts.map((p) => int.tryParse(p)).toList();
+    if (nums.any((n) => n == null || n < 0 || n > 255)) return false;
+    final a = nums[0]!;
+    final b = nums[1]!;
+    if (a == 10) return true;
+    if (a == 192 && b == 168) return true;
+    if (a == 172 && b >= 16 && b <= 31) return true;
+    return false;
   }
 
   Future<void> _runWebViewPreflight() async {
@@ -112,13 +155,17 @@ class _ChatPageState extends State<ChatPage> {
       if (!mounted) return;
 
       if (response.statusCode >= 400) {
-        setState(() {
-          _isPreparingWebView = false;
-          _hasError = true;
-          _isWebViewLoading = false;
-          _errorMessage = "App 内网络预检失败: HTTP ${response.statusCode}\n$uri";
-        });
-        return;
+        final allowUnauthorizedMobile =
+            response.statusCode == 401 && uri.queryParameters["mobile"] == "true";
+        if (!allowUnauthorizedMobile) {
+          setState(() {
+            _isPreparingWebView = false;
+            _hasError = true;
+            _isWebViewLoading = false;
+            _errorMessage = "App 内网络预检失败: HTTP ${response.statusCode}\n$uri";
+          });
+          return;
+        }
       }
 
       setState(() {
@@ -130,6 +177,16 @@ class _ChatPageState extends State<ChatPage> {
       _startLoadTimeout();
     } on SocketException catch (error) {
       if (!mounted) return;
+      if (_shouldBypassPreflightFailure(uri)) {
+        setState(() {
+          _isPreparingWebView = false;
+          _hasError = false;
+          _errorMessage = "";
+          _isWebViewLoading = true;
+        });
+        _startLoadTimeout();
+        return;
+      }
       setState(() {
         _isPreparingWebView = false;
         _hasError = true;
@@ -138,6 +195,16 @@ class _ChatPageState extends State<ChatPage> {
       });
     } on TimeoutException {
       if (!mounted) return;
+      if (_shouldBypassPreflightFailure(uri)) {
+        setState(() {
+          _isPreparingWebView = false;
+          _hasError = false;
+          _errorMessage = "";
+          _isWebViewLoading = true;
+        });
+        _startLoadTimeout();
+        return;
+      }
       setState(() {
         _isPreparingWebView = false;
         _hasError = true;
