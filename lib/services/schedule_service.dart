@@ -165,7 +165,7 @@ class ScheduleService extends ChangeNotifier {
     }
 
     final index = _tasks.indexWhere((t) => t.id == task.id);
-    if (index >= 0) {
+    if (index >= 0 && _tasks[index].enabled) {
       final now = DateTime.now();
       final updated = _tasks[index].copyWith(
         lastRunAt: now,
@@ -250,9 +250,12 @@ class ScheduleService extends ChangeNotifier {
     final delay = next.difference(DateTime.now());
     final safeDelay = delay.isNegative ? const Duration(seconds: 1) : delay;
     _timers[task.id] = Timer(safeDelay, () async {
-      await runTaskNow(task);
-      if (task.scheduleKind == TaskScheduleKind.once) {
-        await toggleTask(task.id, false);
+      final taskId = task.id;
+      final latest = _tasks.where((t) => t.id == taskId).firstOrNull;
+      if (latest == null || !latest.enabled) return;
+      await runTaskNow(latest);
+      if (latest.scheduleKind == TaskScheduleKind.once) {
+        await toggleTask(latest.id, false);
       }
     });
   }
